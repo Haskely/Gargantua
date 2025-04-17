@@ -25,8 +25,8 @@
 </head>
 <body>
     <div style="position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.5); padding: 10px; color: white; border-radius: 5px; z-index: 1000;">
-        <label for="fpsLimit">最大帧率: <span id="fpsValue">30</span> FPS</label>
-        <input type="range" id="fpsLimit" min="10" max="60" step="5" value="30">
+        <label for="fpsLimit">最大帧率: <span id="fpsValue">60</span> FPS</label>
+        <input type="range" id="fpsLimit" min="10" max="60" step="5" value="60">
     </div>
     <canvas id="glCanvas" width="1280" height="720"></canvas>
     
@@ -230,7 +230,7 @@
                 coverage *= noise2;
                 
                 radialCoords.y += iTime * speed * 0.5;
-                
+
                 dustColor *= pow(texture2D(iChannel1, radialCoords.yx * vec2(0.15, 0.27)).rgb, vec3(2.0)) * 4.0;
 
                 coverage = saturate(coverage * 1200.0 / float(ITERATIONS));
