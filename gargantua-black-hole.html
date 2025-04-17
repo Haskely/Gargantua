@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gargantua 黑洞效果</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        canvas {
+            border: 1px solid #333;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="glCanvas"></canvas>
+    
+    <script>
+        // 顶点着色器源码
+        const vertexShaderSource = `
+            attribute vec4 a_position;
+            attribute vec2 a_texCoord;
+            
+            varying vec2 v_texCoord;
+            
+            void main() {
+                gl_Position = a_position;
+                v_texCoord = a_texCoord;
+            }
+        `;
+        
+        // 片元着色器源码，从Shadertoy移植而来
+        const fragmentShaderSource = `
+            precision mediump float;
+            
+            // 从shadertoy移植所需的变量
+            uniform vec2 iResolution;
+            uniform float iTime;
+            uniform vec4 iMouse;
+            uniform sampler2D iChannel0;
+            uniform sampler2D iChannel1;
+            
+            varying vec2 v_texCoord;
+            
+            #define ITERATIONS 300          // 降低迭代次数，提高性能
+
+            const vec3 MainColor = vec3(1.0);
+
+            //noise code by iq
+            float noise( in vec3 x )
+            {
+                vec3 p = floor(x);
+                vec3 f = fract(x);
+                f = f*f*(3.0-2.0*f);
+                vec2 uv = (p.xy+vec2(37.0,17.0)*p.z) + f.xy;
+                vec2 rg = texture2D( iChannel0, (uv+ 0.5)/256.0 ).yx;
+                return -1.0+2.0*mix( rg.x, rg.y, f.z );
+            }
+
+            float saturate(float x)
+            {
+                return clamp(x, 0.0, 1.0);
+            }
+
+            vec3 saturate(vec3 x)
+            {
+                return clamp(x, vec3(0.0), vec3(1.0));
+            }
+
+            float rand(vec2 coord)
+            {
+                return saturate(fract(sin(dot(coord, vec2(12.9898, 78.223))) * 43758.5453));
+            }
+
+            float pcurve( float x, float a, float b )
+            {
+                float k = pow(a+b,a+b) / (pow(a,a)*pow(b,b));
+                return k * pow( x, a ) * pow( 1.0-x, b );
+            }
+
+            const float pi = 3.14159265;
+
+            float atan2(float y, float x)
+            {
+                if (x > 0.0)
+                {
+                    return atan(y / x);
+                }
+                else if (x == 0.0)
+                {
+                    if (y > 0.0)
+                    {
+                        return pi / 2.0;
+                    }
+                    else if (y < 0.0)
+                    {
+                        return -(pi / 2.0);
+                    }
+                    else
+                    {
+                        return 0.0;
+                    }
+                }
+                else //(x < 0.0)
+                {
+                    if (y >= 0.0)
+                    {
+                        return atan(y / x) + pi;
+                    }
+                    else
+                    {
+                        return atan(y / x) - pi;
+                    }
+                }
+            }
+
+            float sdTorus(vec3 p, vec2 t)
+            {
+                vec2 q = vec2(length(p.xz) - t.x, p.y);
+                return length(q)-t.y;
+            }
+
+            float sdSphere(vec3 p, float r)
+            {
+              return length(p)-r;
+            }
+
+            void Haze(inout vec3 color, vec3 pos, float alpha)
+            {
+                vec2 t = vec2(1.0, 0.01);
+
+                float torusDist = length(sdTorus(pos + vec3(0.0, -0.05, 0.0), t));
+
+                float bloomDisc = 1.0 / (pow(torusDist, 2.0) + 0.001);
+                vec3 col = MainColor;
+                bloomDisc *= length(pos) < 0.5 ? 0.0 : 1.0;
+
+                color += col * bloomDisc * (2.9 / float(ITERATIONS)) * (1.0 - alpha * 1.0);
+            }
+
+            void GasDisc(inout vec3 color, inout float alpha, vec3 pos)
+            {
+                float discRadius = 3.2;
+                float discWidth = 5.3;
+                float discInner = discRadius - discWidth * 0.5;
+                float discOuter = discRadius + discWidth * 0.5;
+                
+                vec3 origin = vec3(0.0, 0.0, 0.0);
+                float mouseZ = iMouse.y / iResolution.y;
+                vec3 discNormal = normalize(vec3(0.0, 1.0, 0.0));
+                float discThickness = 0.1;
+
+                float distFromCenter = distance(pos, origin);
+                float distFromDisc = dot(discNormal, pos - origin);
+                
+                float radialGradient = 1.0 - saturate((distFromCenter - discInner) / discWidth * 0.5);
+
+                float coverage = pcurve(radialGradient, 4.0, 0.9);
+
+                discThickness *= radialGradient;
+                coverage *= saturate(1.0 - abs(distFromDisc) / discThickness);
+
+                vec3 dustColorLit = MainColor;
+                vec3 dustColorDark = vec3(0.0, 0.0, 0.0);
+
+                float dustGlow = 1.0 / (pow(1.0 - radialGradient, 2.0) * 290.0 + 0.002);
+                vec3 dustColor = dustColorLit * dustGlow * 8.2;
+
+                coverage = saturate(coverage * 0.7);
+
+
+                float fade = pow((abs(distFromCenter - discInner) + 0.4), 4.0) * 0.04;
+                float bloomFactor = 1.0 / (pow(distFromDisc, 2.0) * 40.0 + fade + 0.00002);
+                vec3 b = dustColorLit * pow(bloomFactor, 1.5);
+                
+                b *= mix(vec3(1.7, 1.1, 1.0), vec3(0.5, 0.6, 1.0), vec3(pow(radialGradient, 2.0)));
+                b *= mix(vec3(1.7, 0.5, 0.1), vec3(1.0), vec3(pow(radialGradient, 0.5)));
+
+                dustColor = mix(dustColor, b * 150.0, saturate(1.0 - coverage * 1.0));
+                coverage = saturate(coverage + bloomFactor * bloomFactor * 0.1);
+                
+                if (coverage < 0.01)
+                {
+                    return;   
+                }
+                
+                
+                vec3 radialCoords;
+                radialCoords.x = distFromCenter * 1.5 + 0.55;
+                radialCoords.y = atan2(-pos.x, -pos.z) * 1.5;
+                radialCoords.z = distFromDisc * 1.5;
+
+                radialCoords *= 0.95;
+                
+                float speed = 0.06;
+                
+                float noise1 = 1.0;
+                vec3 rc = radialCoords + 0.0;               rc.y += iTime * speed;
+                noise1 *= noise(rc * 3.0) * 0.5 + 0.5;      rc.y -= iTime * speed;
+                noise1 *= noise(rc * 6.0) * 0.5 + 0.5;      rc.y += iTime * speed;
+                noise1 *= noise(rc * 12.0) * 0.5 + 0.5;     rc.y -= iTime * speed;
+                noise1 *= noise(rc * 24.0) * 0.5 + 0.5;     rc.y += iTime * speed;
+
+                float noise2 = 2.0;
+                rc = radialCoords + 30.0;
+                noise2 *= noise(rc * 3.0) * 0.5 + 0.5;      rc.y += iTime * speed;
+                noise2 *= noise(rc * 6.0) * 0.5 + 0.5;      rc.y -= iTime * speed;
+                noise2 *= noise(rc * 12.0) * 0.5 + 0.5;     rc.y += iTime * speed;
+                noise2 *= noise(rc * 24.0) * 0.5 + 0.5;     rc.y -= iTime * speed;
+                noise2 *= noise(rc * 48.0) * 0.5 + 0.5;     rc.y += iTime * speed;
+                noise2 *= noise(rc * 92.0) * 0.5 + 0.5;     rc.y -= iTime * speed;
+
+                dustColor *= noise1 * 0.998 + 0.002;
+                coverage *= noise2;
+                
+                radialCoords.y += iTime * speed * 0.5;
+                
+                dustColor *= pow(texture2D(iChannel1, radialCoords.yx * vec2(0.15, 0.27)).rgb, vec3(2.0)) * 4.0;
+
+                coverage = saturate(coverage * 1200.0 / float(ITERATIONS));
+                dustColor = max(vec3(0.0), dustColor);
+
+                coverage *= pcurve(radialGradient, 4.0, 0.9);
+
+                color = (1.0 - alpha) * dustColor * coverage + color;
+
+                alpha = (1.0 - alpha) * coverage + alpha;
+            }
+
+
+
+            vec3 rotate(vec3 p, float x, float y, float z)
+            {
+                mat3 matx = mat3(1.0, 0.0, 0.0,
+                                0.0, cos(x), sin(x),
+                                0.0, -sin(x), cos(x));
+
+                mat3 maty = mat3(cos(y), 0.0, -sin(y),
+                                0.0, 1.0, 0.0,
+                                sin(y), 0.0, cos(y));
+
+                mat3 matz = mat3(cos(z), sin(z), 0.0,
+                                -sin(z), cos(z), 0.0,
+                                0.0, 0.0, 1.0);
+
+                p = matx * p;
+                p = matz * p;
+                p = maty * p;
+
+                return p;
+            }
+
+            void RotateCamera(inout vec3 eyevec, inout vec3 eyepos)
+            {
+                float mousePosY = iMouse.y / iResolution.y;
+                float mousePosX = iMouse.x / iResolution.x;
+
+                vec3 angle = vec3(mousePosY * 0.05 + 0.05, 1.0 + mousePosX * 1.0, -0.45);
+
+                eyevec = rotate(eyevec, angle.x, angle.y, angle.z);
+                eyepos = rotate(eyepos, angle.x, angle.y, angle.z);
+            }
+
+            void WarpSpace(inout vec3 eyevec, inout vec3 raypos)
+            {
+                vec3 origin = vec3(0.0, 0.0, 0.0);
+
+                float singularityDist = distance(raypos, origin);
+                float warpFactor = 1.0 / (pow(singularityDist, 2.0) + 0.000001);
+
+                vec3 singularityVector = normalize(origin - raypos);
+                
+                float warpAmount = 5.0;
+
+                eyevec = normalize(eyevec + singularityVector * warpFactor * warpAmount / float(ITERATIONS));
+            }
+            
+            void mainImage( out vec4 fragColor, in vec2 fragCoord )
+            {
+                vec2 uv = fragCoord.xy / iResolution.xy;
+                
+                float aspect = iResolution.x / iResolution.y;
+
+                vec2 uveye = uv;
+                
+                vec3 eyevec = normalize(vec3((uveye * 2.0 - 1.0) * vec2(aspect, 1.0), 6.0));
+                vec3 eyepos = vec3(0.0, -0.0, -10.0);
+                
+                vec2 mousepos = iMouse.xy / iResolution.xy;
+                if (mousepos.x == 0.0)
+                {
+                    mousepos.x = 0.35;
+                }
+                eyepos.x += mousepos.x * 3.0 - 1.5;
+                
+                const float far = 15.0;
+
+                RotateCamera(eyevec, eyepos);
+
+                vec3 color = vec3(0.0, 0.0, 0.0);
+                
+                float dither = rand(uv) * 2.0;
+
+                float alpha = 0.0;
+                vec3 raypos = eyepos + eyevec * dither * far / float(ITERATIONS);
+                for (int i = 0; i < ITERATIONS; i++)
+                {        
+                    WarpSpace(eyevec, raypos);
+                    raypos += eyevec * far / float(ITERATIONS);
+                    GasDisc(color, alpha, raypos);
+                    Haze(color, raypos, alpha);
+                }
+                
+                color *= 0.02;
+                color = pow(color, vec3(1.5));
+                color = color / (1.0 + color);
+                color = pow(color, vec3(1.0 / 1.5));
+
+                
+                color = mix(color, color * color * (3.0 - 2.0 * color), vec3(1.0));
+                color = pow(color, vec3(1.3, 1.20, 1.0));    
+
+                color = saturate(color * 1.01);
+                
+                color = pow(color, vec3(0.7 / 2.2));
+                
+                fragColor = vec4(color, 1.0);
+            }
+
+            // WebGL入口点
+            void main() {
+                vec2 fragCoord = v_texCoord * iResolution;
+                vec4 fragColor;
+                mainImage(fragColor, fragCoord);
+                gl_FragColor = fragColor;
+            }
+        `;
+        
+        // 纹理图片路径
+        const organicTextureUrl = "textures/organic_1_1024.jpg";
+        const noiseTextureUrl = "textures/rgba_noise_medium_256.png";
+        
+        // 跟踪鼠标位置
+        let mouseX = 0;
+        let mouseY = 0;
+        let mouseDown = false;
+        
+        // 主函数
+        async function main() {
+            const canvas = document.getElementById("glCanvas");
+            
+            // 设置全屏canvas
+            const setCanvasSize = () => {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+            };
+            
+            // 初始设置canvas尺寸
+            setCanvasSize();
+            
+            // 在窗口大小变化时调整canvas尺寸
+            window.addEventListener('resize', () => {
+                setCanvasSize();
+                if (gl) {
+                    gl.viewport(0, 0, canvas.width, canvas.height);
+                }
+            });
+            
+            const gl = canvas.getContext("webgl2");
+            
+            if (!gl) {
+                console.error("无法初始化 WebGL。您的浏览器或机器可能不支持它。");
+                return;
+            }
+            
+            // 编译着色器程序
+            const shaderProgram = initShaderProgram(gl, vertexShaderSource, fragmentShaderSource);
+            
+            // 获取着色器中的属性和统一变量位置
+            const programInfo = {
+                program: shaderProgram,
+                attribLocations: {
+                    position: gl.getAttribLocation(shaderProgram, 'a_position'),
+                    texCoord: gl.getAttribLocation(shaderProgram, 'a_texCoord')
+                },
+                uniformLocations: {
+                    iResolution: gl.getUniformLocation(shaderProgram, 'iResolution'),
+                    iTime: gl.getUniformLocation(shaderProgram, 'iTime'),
+                    iMouse: gl.getUniformLocation(shaderProgram, 'iMouse'),
+                    iChannel0: gl.getUniformLocation(shaderProgram, 'iChannel0'),
+                    iChannel1: gl.getUniformLocation(shaderProgram, 'iChannel1')
+                },
+            };
+            
+            // 初始化缓冲区对象
+            const buffers = initBuffers(gl);
+            
+            try {
+                // 并行加载纹理
+                const [texture0, texture1] = await Promise.all([
+                    loadTexture(gl, noiseTextureUrl),
+                    loadTexture(gl, organicTextureUrl)
+                ]);
+                
+                const textures = {
+                    texture0,
+                    texture1
+                };
+                
+                // 设置鼠标事件监听
+                setupMouseHandling(canvas);
+                
+                // 启动渲染循环
+                let startTime = performance.now();
+                function render(currentTime) {
+                    const elapsedTime = (currentTime - startTime) / 1000; // 转换为秒
+                    
+                    // 绘制场景
+                    drawScene(gl, programInfo, buffers, textures, elapsedTime);
+                    
+                    // 请求下一帧
+                    requestAnimationFrame(render);
+                }
+                
+                // 开始渲染
+                requestAnimationFrame(render);
+                
+            } catch (error) {
+                console.error('加载纹理时发生错误:', error);
+            }
+        }
+        
+        // 初始化着色器程序
+        function initShaderProgram(gl, vsSource, fsSource) {
+            const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+            const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
+            
+            // 创建着色器程序
+            const shaderProgram = gl.createProgram();
+            gl.attachShader(shaderProgram, vertexShader);
+            gl.attachShader(shaderProgram, fragmentShader);
+            gl.linkProgram(shaderProgram);
+            
+            // 检查着色器程序是否创建成功
+            if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+                console.error('无法初始化着色器程序: ' + gl.getProgramInfoLog(shaderProgram));
+                return null;
+            }
+            
+            return shaderProgram;
+        }
+        
+        // 加载着色器
+        function loadShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            
+            // 将源代码发送到着色器对象
+            gl.shaderSource(shader, source);
+            
+            // 编译着色器程序
+            gl.compileShader(shader);
+            
+            // 检查是否编译成功
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error('编译着色器时发生错误: ' + gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            
+            return shader;
+        }
+        
+        // 初始化缓冲区
+        function initBuffers(gl) {
+            // 创建顶点缓冲区
+            const positionBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            
+            // 定义一个覆盖整个画布的矩形（使用两个三角形）
+            const positions = [
+                -1.0, -1.0,  // 左下角
+                 1.0, -1.0,  // 右下角
+                -1.0,  1.0,  // 左上角
+                 1.0,  1.0,  // 右上角
+            ];
+            
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+            
+            // 创建纹理坐标缓冲区
+            const texCoordBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+            
+            // 定义纹理坐标
+            const textureCoordinates = [
+                0.0, 1.0,  // 左下角
+                1.0, 1.0,  // 右下角
+                0.0, 0.0,  // 左上角
+                1.0, 0.0,  // 右上角
+            ];
+            
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoordinates), gl.STATIC_DRAW);
+            
+            return {
+                position: positionBuffer,
+                texCoord: texCoordBuffer,
+            };
+        }
+        
+        // 加载纹理
+        function loadTexture(gl, url) {
+            return new Promise((resolve, reject) => {
+                const texture = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                
+                // 填充纹理，直到图像加载完成
+                const level = 0;
+                const internalFormat = gl.RGBA;
+                const width = 1;
+                const height = 1;
+                const border = 0;
+                const srcFormat = gl.RGBA;
+                const srcType = gl.UNSIGNED_BYTE;
+                const pixel = new Uint8Array([0, 0, 255, 255]);  // 蓝色
+                gl.texImage2D(gl.TEXTURE_2D, level, internalFormat,
+                              width, height, border, srcFormat, srcType,
+                              pixel);
+                
+                const image = new Image();
+                image.onload = function() {
+                    gl.bindTexture(gl.TEXTURE_2D, texture);
+                    gl.texImage2D(gl.TEXTURE_2D, level, internalFormat,
+                                  srcFormat, srcType, image);
+                    
+                    // 检查图像是否为2的幂
+                    if (isPowerOf2(image.width) && isPowerOf2(image.height)) {
+                        // 生成mipmap
+                        gl.generateMipmap(gl.TEXTURE_2D);
+                        // 设置纹理参数
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                    } else {
+                        // 设置参数，使其在非2次幂尺寸下也能工作
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                    }
+                    
+                    resolve(texture);
+                };
+                image.onerror = function() {
+                    reject(new Error(`加载图片失败: ${url}`));
+                };
+                image.src = url;
+            });
+        }
+        
+        // 检查数字是否为2的幂
+        function isPowerOf2(value) {
+            return (value & (value - 1)) == 0;
+        }
+        
+        // 设置鼠标事件处理
+        function setupMouseHandling(canvas) {
+            // 鼠标移动事件
+            canvas.addEventListener('mousemove', (event) => {
+                mouseX = event.clientX;
+                mouseY = event.clientY;
+            });
+            
+            // 鼠标按下事件
+            canvas.addEventListener('mousedown', () => {
+                mouseDown = true;
+            });
+            
+            // 鼠标释放事件
+            canvas.addEventListener('mouseup', () => {
+                mouseDown = false;
+            });
+            
+            // 移动端触摸事件
+            canvas.addEventListener('touchstart', (event) => {
+                event.preventDefault();
+                mouseDown = true;
+                if (event.touches.length > 0) {
+                    mouseX = event.touches[0].clientX;
+                    mouseY = event.touches[0].clientY;
+                }
+            });
+            
+            canvas.addEventListener('touchmove', (event) => {
+                event.preventDefault();
+                if (event.touches.length > 0) {
+                    mouseX = event.touches[0].clientX;
+                    mouseY = event.touches[0].clientY;
+                }
+            });
+            
+            canvas.addEventListener('touchend', () => {
+                mouseDown = false;
+            });
+        }
+        
+        // 绘制场景
+        function drawScene(gl, programInfo, buffers, textures, time) {
+            // 设置视口为整个canvas
+            gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+            
+            gl.clearColor(0.0, 0.0, 0.0, 1.0);
+            gl.clearDepth(1.0);
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.LEQUAL);
+            
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            
+            // 使用着色器程序
+            gl.useProgram(programInfo.program);
+            
+            // 设置顶点位置属性
+            {
+                const numComponents = 2;  // 每个顶点2个值(x, y)
+                const type = gl.FLOAT;
+                const normalize = false;
+                const stride = 0;
+                const offset = 0;
+                gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
+                gl.vertexAttribPointer(
+                    programInfo.attribLocations.position,
+                    numComponents,
+                    type,
+                    normalize,
+                    stride,
+                    offset);
+                gl.enableVertexAttribArray(
+                    programInfo.attribLocations.position);
+            }
+            
+            // 设置纹理坐标属性
+            {
+                const numComponents = 2;  // 每个纹理坐标2个值(s, t)
+                const type = gl.FLOAT;
+                const normalize = false;
+                const stride = 0;
+                const offset = 0;
+                gl.bindBuffer(gl.ARRAY_BUFFER, buffers.texCoord);
+                gl.vertexAttribPointer(
+                    programInfo.attribLocations.texCoord,
+                    numComponents,
+                    type,
+                    normalize,
+                    stride,
+                    offset);
+                gl.enableVertexAttribArray(
+                    programInfo.attribLocations.texCoord);
+            }
+            
+            // 设置着色器 uniforms
+            gl.uniform2f(programInfo.uniformLocations.iResolution, gl.canvas.width, gl.canvas.height);
+            gl.uniform1f(programInfo.uniformLocations.iTime, time);
+            gl.uniform4f(programInfo.uniformLocations.iMouse, mouseX, mouseY, mouseDown ? 1.0 : 0.0, 0.0);
+            
+            // 激活第一个纹理单元 - 噪声纹理
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, textures.texture0);
+            gl.uniform1i(programInfo.uniformLocations.iChannel0, 0);
+            
+            // 激活第二个纹理单元 - 有机纹理
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, textures.texture1);
+            gl.uniform1i(programInfo.uniformLocations.iChannel1, 1);
+            
+            // 绘制
+            {
+                const offset = 0;
+                const vertexCount = 4;
+                gl.drawArrays(gl.TRIANGLE_STRIP, offset, vertexCount);
+            }
+        }
+        
+        // 页面加载完成后开始初始化
+        window.onload = main;
+    </script>
+</body>
+</html>
