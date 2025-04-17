@@ -499,10 +499,10 @@
             
             // 定义纹理坐标
             const textureCoordinates = [
-                0.0, 1.0,  // 左下角
-                1.0, 1.0,  // 右下角
-                0.0, 0.0,  // 左上角
-                1.0, 0.0,  // 右上角
+                0.0, 0.0,  // 左下角
+                1.0, 0.0,  // 右下角
+                0.0, 1.0,  // 左上角
+                1.0, 1.0,  // 右上角
             ];
             
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoordinates), gl.STATIC_DRAW);
