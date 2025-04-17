@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGL 纹理样例</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        canvas {
+            border: 1px solid #333;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="glCanvas"></canvas>
+    
+    <script>
+        // 顶点着色器源码
+        const vertexShaderSource = `
+            attribute vec4 a_position;
+            attribute vec2 a_texCoord;
+            
+            varying vec2 v_texCoord;
+            
+            void main() {
+                gl_Position = a_position;
+                v_texCoord = a_texCoord;
+            }
+        `;
+        
+        // 片元着色器源码
+        const fragmentShaderSource = `
+            precision mediump float;
+            
+            uniform sampler2D u_texture1;
+            uniform sampler2D u_texture2;
+            
+            varying vec2 v_texCoord;
+            
+            void main() {
+                if (v_texCoord.x < 0.5) {
+                    // 左半边显示第一张纹理
+                    vec2 adjustedCoord = vec2(v_texCoord.x * 2.0, v_texCoord.y);
+                    gl_FragColor = texture2D(u_texture1, adjustedCoord);
+                } else {
+                    // 右半边显示第二张纹理
+                    vec2 adjustedCoord = vec2((v_texCoord.x - 0.5) * 2.0, v_texCoord.y);
+                    gl_FragColor = texture2D(u_texture2, adjustedCoord);
+                }
+            }
+        `;
+        
+        // 纹理图片路径
+        const organicTextureUrl = "textures/organic_1_1024.jpg";
+        const noiseTextureUrl = "textures/rgba_noise_medium_256.png";
+        
+        // 主函数 - 改为 async
+        async function main() {
+            const canvas = document.getElementById("glCanvas");
+            const gl = canvas.getContext("webgl");
+            
+            if (!gl) {
+                console.error("无法初始化 WebGL。您的浏览器或机器可能不支持它。");
+                return;
+            }
+            
+            // 编译着色器程序
+            const shaderProgram = initShaderProgram(gl, vertexShaderSource, fragmentShaderSource);
+            
+            // 获取着色器中的属性和统一变量位置
+            const programInfo = {
+                program: shaderProgram,
+                attribLocations: {
+                    position: gl.getAttribLocation(shaderProgram, 'a_position'),
+                    texCoord: gl.getAttribLocation(shaderProgram, 'a_texCoord')
+                },
+                uniformLocations: {
+                    texture1: gl.getUniformLocation(shaderProgram, 'u_texture1'),
+                    texture2: gl.getUniformLocation(shaderProgram, 'u_texture2')
+                },
+            };
+            
+            // 初始化缓冲区对象
+            const buffers = initBuffers(gl);
+            
+            try {
+                // 并行加载纹理 - 使用 Promise.all 和 await
+                const [texture1, texture2] = await Promise.all([
+                    loadTexture(gl, organicTextureUrl),
+                    loadTexture(gl, noiseTextureUrl)
+                ]);
+                
+                const textures = {
+                    texture1,
+                    texture2
+                };
+                
+                // 所有纹理已加载，绘制场景
+                drawScene(gl, programInfo, buffers, textures);
+            } catch (error) {
+                console.error('加载纹理时发生错误:', error);
+            }
+        }
+        
+        // 初始化着色器程序
+        function initShaderProgram(gl, vsSource, fsSource) {
+            const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+            const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
+            
+            // 创建着色器程序
+            const shaderProgram = gl.createProgram();
+            gl.attachShader(shaderProgram, vertexShader);
+            gl.attachShader(shaderProgram, fragmentShader);
+            gl.linkProgram(shaderProgram);
+            
+            // 检查着色器程序是否创建成功
+            if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+                console.error('无法初始化着色器程序: ' + gl.getProgramInfoLog(shaderProgram));
+                return null;
+            }
+            
+            return shaderProgram;
+        }
+        
+        // 加载着色器
+        function loadShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            
+            // 将源代码发送到着色器对象
+            gl.shaderSource(shader, source);
+            
+            // 编译着色器程序
+            gl.compileShader(shader);
+            
+            // 检查是否编译成功
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error('编译着色器时发生错误: ' + gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            
+            return shader;
+        }
+        
+        // 初始化缓冲区
+        function initBuffers(gl) {
+            // 创建顶点缓冲区
+            const positionBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            
+            // 定义一个覆盖整个画布的矩形（使用两个三角形）
+            const positions = [
+                -1.0, -1.0,  // 左下角
+                 1.0, -1.0,  // 右下角
+                -1.0,  1.0,  // 左上角
+                 1.0,  1.0,  // 右上角
+            ];
+            
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+            
+            // 创建纹理坐标缓冲区
+            const texCoordBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+            
+            // 定义纹理坐标
+            const textureCoordinates = [
+                0.0, 1.0,  // 左下角
+                1.0, 1.0,  // 右下角
+                0.0, 0.0,  // 左上角
+                1.0, 0.0,  // 右上角
+            ];
+            
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoordinates), gl.STATIC_DRAW);
+            
+            return {
+                position: positionBuffer,
+                texCoord: texCoordBuffer,
+            };
+        }
+        
+        // 加载纹理 - 使用 Promise 结构保持不变，但内部使用 async/await
+        function loadTexture(gl, url) {
+            return new Promise((resolve, reject) => {
+                const texture = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                
+                // 填充纹理，直到图像加载完成
+                const level = 0;
+                const internalFormat = gl.RGBA;
+                const width = 1;
+                const height = 1;
+                const border = 0;
+                const srcFormat = gl.RGBA;
+                const srcType = gl.UNSIGNED_BYTE;
+                const pixel = new Uint8Array([0, 0, 255, 255]);  // 蓝色
+                gl.texImage2D(gl.TEXTURE_2D, level, internalFormat,
+                              width, height, border, srcFormat, srcType,
+                              pixel);
+                
+                const image = new Image();
+                image.onload = function() {
+                    gl.bindTexture(gl.TEXTURE_2D, texture);
+                    gl.texImage2D(gl.TEXTURE_2D, level, internalFormat,
+                                  srcFormat, srcType, image);
+                    
+                    // 检查图像是否为2的幂
+                    if (isPowerOf2(image.width) && isPowerOf2(image.height)) {
+                        // 生成mipmap
+                        gl.generateMipmap(gl.TEXTURE_2D);
+                    } else {
+                        // 设置参数，使其在非2次幂尺寸下也能工作
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                    }
+                    
+                    resolve(texture);
+                };
+                image.onerror = function() {
+                    reject(new Error(`加载图片失败: ${url}`));
+                };
+                image.src = url;
+            });
+        }
+        
+        // 检查数字是否为2的幂
+        function isPowerOf2(value) {
+            return (value & (value - 1)) == 0;
+        }
+        
+        // 绘制场景
+        function drawScene(gl, programInfo, buffers, textures) {
+            gl.clearColor(0.0, 0.0, 0.0, 1.0);
+            gl.clearDepth(1.0);
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.LEQUAL);
+            
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            
+            // 使用着色器程序
+            gl.useProgram(programInfo.program);
+            
+            // 设置顶点位置属性
+            {
+                const numComponents = 2;  // 每个顶点2个值(x, y)
+                const type = gl.FLOAT;
+                const normalize = false;
+                const stride = 0;
+                const offset = 0;
+                gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
+                gl.vertexAttribPointer(
+                    programInfo.attribLocations.position,
+                    numComponents,
+                    type,
+                    normalize,
+                    stride,
+                    offset);
+                gl.enableVertexAttribArray(
+                    programInfo.attribLocations.position);
+            }
+            
+            // 设置纹理坐标属性
+            {
+                const numComponents = 2;  // 每个纹理坐标2个值(s, t)
+                const type = gl.FLOAT;
+                const normalize = false;
+                const stride = 0;
+                const offset = 0;
+                gl.bindBuffer(gl.ARRAY_BUFFER, buffers.texCoord);
+                gl.vertexAttribPointer(
+                    programInfo.attribLocations.texCoord,
+                    numComponents,
+                    type,
+                    normalize,
+                    stride,
+                    offset);
+                gl.enableVertexAttribArray(
+                    programInfo.attribLocations.texCoord);
+            }
+            
+            // 激活第一个纹理单元
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, textures.texture1);
+            gl.uniform1i(programInfo.uniformLocations.texture1, 0);
+            
+            // 激活第二个纹理单元
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, textures.texture2);
+            gl.uniform1i(programInfo.uniformLocations.texture2, 1);
+            
+            // 绘制
+            {
+                const offset = 0;
+                const vertexCount = 4;
+                gl.drawArrays(gl.TRIANGLE_STRIP, offset, vertexCount);
+            }
+        }
+        
+        // 页面加载完成后开始初始化
+        window.onload = main;
+    </script>
+</body>
+</html>
