@@ -16,11 +16,16 @@
         }
         canvas {
             border: 1px solid #333;
+            width: auto;
+            height: auto;
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
         }
     </style>
 </head>
 <body>
-    <canvas id="glCanvas"></canvas>
+    <canvas id="glCanvas" width="1280" height="720"></canvas>
     
     <script>
         // 顶点着色器源码
@@ -39,6 +44,7 @@
         // 片元着色器源码，从Shadertoy移植而来
         const fragmentShaderSource = `
             precision mediump float;
+            // precision highp float;
             
             // 从shadertoy移植所需的变量
             uniform vec2 iResolution;
@@ -49,7 +55,7 @@
             
             varying vec2 v_texCoord;
             
-            #define ITERATIONS 300          // 降低迭代次数，提高性能
+            #define ITERATIONS 200          // 降低迭代次数，提高性能
 
             const vec3 MainColor = vec3(1.0);
 
@@ -356,18 +362,17 @@
         async function main() {
             const canvas = document.getElementById("glCanvas");
             
-            // 设置全屏canvas
-            const setCanvasSize = () => {
-                canvas.width = window.innerWidth;
-                canvas.height = window.innerHeight;
-            };
+            // Canvas保持固定分辨率1280x720
+            const CANVAS_WIDTH = 1280;
+            const CANVAS_HEIGHT = 720;
             
-            // 初始设置canvas尺寸
-            setCanvasSize();
+            // 设置canvas固定分辨率
+            canvas.width = CANVAS_WIDTH;
+            canvas.height = CANVAS_HEIGHT;
             
-            // 在窗口大小变化时调整canvas尺寸
+            // 不再需要调整canvas实际尺寸，CSS会处理显示缩放
             window.addEventListener('resize', () => {
-                setCanvasSize();
+                // 只需要确保视口与canvas尺寸一致
                 if (gl) {
                     gl.viewport(0, 0, canvas.width, canvas.height);
                 }
