@@ -17,8 +17,8 @@
             border: #ffffff 1px solid;
             width: auto;
             height: auto;
-            max-width: 100%;
-            max-height: 100%;
+            max-width: 70vw;
+            max-height: 70vh;
             object-fit: contain;
         }
     </style>
@@ -28,7 +28,7 @@
         <label for="fpsLimit">最大帧率: <span id="fpsValue">60</span> FPS</label>
         <input type="range" id="fpsLimit" min="10" max="60" step="5" value="60">
     </div>
-    <canvas id="glCanvas" width="1280" height="720"></canvas>
+    <canvas id="glCanvas" width="1920" height="1080"></canvas>
     
     <script>
         // 顶点着色器源码
@@ -293,7 +293,7 @@
             
             void mainImage( out vec4 fragColor, in vec2 fragCoord )
             {
-                vec2 uv = 2.0 * fragCoord.xy / iResolution.xy - 0.5;
+                vec2 uv = fragCoord.xy / iResolution.xy;
                 
                 float aspect = iResolution.x / iResolution.y;
 
@@ -364,23 +364,6 @@
         // 主函数
         async function main() {
             const canvas = document.getElementById("glCanvas");
-            
-            // Canvas保持固定分辨率1280x720
-            const CANVAS_WIDTH = 1280;
-            const CANVAS_HEIGHT = 720;
-            
-            // 设置canvas固定分辨率
-            canvas.width = CANVAS_WIDTH;
-            canvas.height = CANVAS_HEIGHT;
-            
-            // 不再需要调整canvas实际尺寸，CSS会处理显示缩放
-            window.addEventListener('resize', () => {
-                // 只需要确保视口与canvas尺寸一致
-                if (gl) {
-                    gl.viewport(0, 0, canvas.width, canvas.height);
-                }
-            });
-            
             const gl = canvas.getContext("webgl2");
             
             if (!gl) {
