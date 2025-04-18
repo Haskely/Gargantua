@@ -56,6 +56,10 @@
             uniform sampler2D iChannel0;
             uniform sampler2D iChannel1;
             
+            // 相机旋转参数
+            uniform float cameraRotX;
+            uniform float cameraRotY;
+            
             varying vec2 v_texCoord;
             
             #define ITERATIONS 200          // 降低迭代次数，提高性能
@@ -268,10 +272,8 @@
 
             void RotateCamera(inout vec3 eyevec, inout vec3 eyepos)
             {
-                float mousePosY = iMouse.y / iResolution.y;
-                float mousePosX = iMouse.x / iResolution.x;
-
-                vec3 angle = vec3(mousePosY * 0.05 + 0.05, 1.0 + mousePosX * 1.0, -0.45);
+                // 使用uniform传入的摄像机旋转变量
+                vec3 angle = vec3(cameraRotX, cameraRotY, -0.45);
 
                 eyevec = rotate(eyevec, angle.x, angle.y, angle.z);
                 eyepos = rotate(eyepos, angle.x, angle.y, angle.z);
@@ -302,12 +304,7 @@
                 vec3 eyevec = normalize(vec3((uveye * 2.0 - 1.0) * vec2(aspect, 1.0), 6.0));
                 vec3 eyepos = vec3(0.0, -0.0, -10.0);
                 
-                vec2 mousepos = iMouse.xy / iResolution.xy;
-                if (mousepos.x == 0.0)
-                {
-                    mousepos.x = 0.35;
-                }
-                eyepos.x += mousepos.x * 3.0 - 1.5;
+                // 不再使用鼠标位置直接控制相机位置，改为使用 RotateCamera 函数
                 
                 const float far = 15.0;
 
@@ -360,6 +357,10 @@
         let mouseX = 0;
         let mouseY = 0;
         let mouseDown = false;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+        let cameraRotationX = 0.05; // 初始X轴旋转
+        let cameraRotationY = 1.0;  // 初始Y轴旋转
         
         // 主函数
         async function main() {
@@ -386,7 +387,9 @@
                     iTime: gl.getUniformLocation(shaderProgram, 'iTime'),
                     iMouse: gl.getUniformLocation(shaderProgram, 'iMouse'),
                     iChannel0: gl.getUniformLocation(shaderProgram, 'iChannel0'),
-                    iChannel1: gl.getUniformLocation(shaderProgram, 'iChannel1')
+                    iChannel1: gl.getUniformLocation(shaderProgram, 'iChannel1'),
+                    cameraRotX: gl.getUniformLocation(shaderProgram, 'cameraRotX'),
+                    cameraRotY: gl.getUniformLocation(shaderProgram, 'cameraRotY')
                 },
             };
             
@@ -598,19 +601,50 @@
         
         // 设置鼠标事件处理
         function setupMouseHandling(canvas) {
-            // 鼠标移动事件
-            canvas.addEventListener('mousemove', (event) => {
+            X_MIN = -1.0;
+            X_MAX = 1.0;
+
+            // 鼠标按下事件
+            canvas.addEventListener('mousedown', (event) => {
+                mouseDown = true;
+                lastMouseX = event.clientX;
+                lastMouseY = event.clientY;
                 mouseX = event.clientX;
                 mouseY = event.clientY;
             });
             
-            // 鼠标按下事件
-            canvas.addEventListener('mousedown', () => {
-                mouseDown = true;
+            // 鼠标移动事件
+            canvas.addEventListener('mousemove', (event) => {
+                mouseX = event.clientX;
+                mouseY = event.clientY;
+                
+                // 如果鼠标按下，计算拖拽距离并更新相机旋转
+                if (mouseDown) {
+                    // 计算鼠标移动的距离
+                    const deltaX = mouseX - lastMouseX;
+                    const deltaY = mouseY - lastMouseY;
+                    
+                    // 根据鼠标移动调整相机旋转角度，使用适当的灵敏度系数
+                    const rotationSpeed = 0.005;
+                    cameraRotationY += deltaX * rotationSpeed;
+                    cameraRotationX -= deltaY * rotationSpeed;
+                    
+                    // 限制垂直旋转范围，防止过度旋转
+                    cameraRotationX = Math.max(X_MIN, Math.min(X_MAX, cameraRotationX));
+                    
+                    // 更新鼠标位置以备下次计算
+                    lastMouseX = mouseX;
+                    lastMouseY = mouseY;
+                }
             });
             
             // 鼠标释放事件
             canvas.addEventListener('mouseup', () => {
+                mouseDown = false;
+            });
+            
+            // 移出画布时释放鼠标按下状态
+            canvas.addEventListener('mouseleave', () => {
                 mouseDown = false;
             });
             
@@ -619,22 +653,47 @@
                 event.preventDefault();
                 mouseDown = true;
                 if (event.touches.length > 0) {
-                    mouseX = event.touches[0].clientX;
-                    mouseY = event.touches[0].clientY;
+                    lastMouseX = event.touches[0].clientX;
+                    lastMouseY = event.touches[0].clientY;
+                    mouseX = lastMouseX;
+                    mouseY = lastMouseY;
                 }
             });
             
             canvas.addEventListener('touchmove', (event) => {
                 event.preventDefault();
-                if (event.touches.length > 0) {
+                if (event.touches.length > 0 && mouseDown) {
+                    // 当前触摸位置
                     mouseX = event.touches[0].clientX;
                     mouseY = event.touches[0].clientY;
+                    
+                    // 计算触摸移动的距离
+                    const deltaX = mouseX - lastMouseX;
+                    const deltaY = mouseY - lastMouseY;
+                    
+                    // 根据触摸移动调整相机旋转角度
+                    const rotationSpeed = 0.005;
+                    cameraRotationY += deltaX * rotationSpeed;
+                    cameraRotationX -= deltaY * rotationSpeed;
+                    
+                    // 限制垂直旋转范围
+                    cameraRotationX = Math.max(X_MIN, Math.min(X_MAX, cameraRotationX));
+                    
+                    // 更新触摸位置以备下次计算
+                    lastMouseX = mouseX;
+                    lastMouseY = mouseY;
                 }
             });
             
             canvas.addEventListener('touchend', () => {
                 mouseDown = false;
             });
+            
+            // 添加鼠标滚轮缩放功能 (可选)
+            canvas.addEventListener('wheel', (event) => {
+                event.preventDefault();
+                // 这里可以添加缩放逻辑，如果需要的话
+            }, { passive: false });
         }
         
         // 设置帧率控制
@@ -706,6 +765,10 @@
             gl.uniform2f(programInfo.uniformLocations.iResolution, gl.canvas.width, gl.canvas.height);
             gl.uniform1f(programInfo.uniformLocations.iTime, time);
             gl.uniform4f(programInfo.uniformLocations.iMouse, mouseX, mouseY, mouseDown ? 1.0 : 0.0, 0.0);
+            
+            // 传递相机旋转参数
+            gl.uniform1f(programInfo.uniformLocations.cameraRotX, cameraRotationX);
+            gl.uniform1f(programInfo.uniformLocations.cameraRotY, cameraRotationY);
             
             // 激活第一个纹理单元 - 噪声纹理
             gl.activeTexture(gl.TEXTURE0);
