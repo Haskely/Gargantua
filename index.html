@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gargantua 黑洞效果</title>
+    <title>Gargantua 黑洞效果（带时间性抗锯齿）</title>
     <style>
         body {
             overflow: hidden;
@@ -12,6 +12,7 @@
             justify-content: center;
             align-items: center;
             height: 100vh;
+            margin: 0;
         }
         canvas {
             border: #ffffff 1px solid;
@@ -21,12 +22,31 @@
             max-height: 70vh;
             object-fit: contain;
         }
+        .controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            color: white;
+            border-radius: 5px;
+            z-index: 1000;
+        }
+        .controls label {
+            display: block;
+            margin-bottom: 5px;
+        }
     </style>
 </head>
 <body>
-    <div style="position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.5); padding: 10px; color: white; border-radius: 5px; z-index: 1000;">
+    <div class="controls">
         <label for="fpsLimit">最大帧率: <span id="fpsValue">60</span> FPS</label>
         <input type="range" id="fpsLimit" min="10" max="60" step="5" value="60">
+        <label for="taaEnabled">
+            <input type="checkbox" id="taaEnabled" checked> 启用时间性抗锯齿(TAA)
+        </label>
+        <label for="jitterStrength">抖动强度: <span id="jitterValue">1.0</span></label>
+        <input type="range" id="jitterStrength" min="0" max="5" step="0.1" value="1.0">
     </div>
     <canvas id="glCanvas" width="1500" height="844"></canvas>
     
@@ -47,7 +67,6 @@
         // 片元着色器源码，从Shadertoy移植而来
         const fragmentShaderSource = `#version 300 es
             precision mediump float;
-            // precision highp float;
             
             // 从shadertoy移植所需的变量
             uniform vec2 iResolution;
@@ -55,21 +74,23 @@
             uniform vec4 iMouse;
             uniform sampler2D iChannel0;
             uniform sampler2D iChannel1;
+            uniform sampler2D previousFrame; // 上一帧的结果
+            uniform vec2 jitterOffset;       // 时间性抗锯齿的抖动偏移
+            uniform bool useTAA;             // 是否启用TAA
+            uniform float blendFactor;       // 当前帧与上一帧的混合因子
             
             // 相机旋转参数
             uniform float cameraRotX;
             uniform float cameraRotY;
             
-            
             /*  
             Main render. 
-
+            
             Temporal AA for a smooth image. Temporal accumulation is disabled while moving the view to prevent ghosting.
             */
 
-            #define ITERATIONS 100          //Increase for less grainy result
-            #define TEMPORAL_AB
-
+            #define ITERATIONS 200          //Increase for less grainy result
+            #define TEMPORAL_AA             //Enable temporal anti-aliasing
 
             const vec3 MainColor = vec3(1.0);
 
@@ -250,7 +271,7 @@
                 
                 float speed = 0.0;
                 
-                radialCoords.y += iTime * 0.3 * 0.5;
+                radialCoords.y += iTime * 0.1 * 0.5;
                 
                 float noise1 = 1.0;
                 vec3 rc = radialCoords + 0.0;               rc.y += iTime * speed;
@@ -333,8 +354,8 @@
 
             void mainImage( out vec4 fragColor, in vec2 fragCoord )
             {
-                
-                vec2 uv = fragCoord.xy / iResolution.xy;
+                // 应用时间性抗锯齿的抖动偏移
+                vec2 uv = (fragCoord.xy + jitterOffset) / iResolution.xy;
                 
                 float aspect = iResolution.x / iResolution.y;
 
@@ -349,7 +370,7 @@
 
                 vec3 color = vec3(0.0, 0.0, 0.0);
                 
-                float dither = rand(uv) * 2.0;
+                float dither = rand(uv) * 3.0;
 
 
                 float alpha = 0.;
@@ -364,7 +385,7 @@
                     pre_pos = raypos;
                 }
                 
-                color *= 0.05;
+                color *= 0.03;
                 color = pow(color, vec3(1.5));
                 color = color / (1.0 + color);
                 color = pow(color, vec3(1.0 / 1.5));
@@ -376,10 +397,18 @@
                 color = saturate(color * 1.01);
 
                 color = pow(color, vec3(0.7 / 2.2));
+                
+                // 如果启用TAA，混合当前帧与上一帧
+                if(useTAA) {
+                    // 获取上一帧在当前位置的颜色
+                    vec4 prevColor = texture(previousFrame, uv);
+                    // 历史帧与当前帧的混合
+                    color = mix(prevColor.rgb, color, blendFactor);
+                }
 
                 fragColor = vec4(color, 1.0);
-
             }
+            
             in vec2 v_texCoord;
             out vec4 outColor;
 
@@ -405,10 +434,17 @@
         let cameraRotationX = 0.05; // 初始X轴旋转
         let cameraRotationY = 1.0;  // 初始Y轴旋转
         
+        // TAA参数
+        let taaEnabled = true;      // 是否启用TAA
+        let jitterStrength = 1.0;   // 抖动强度
+        let jitterPhase = 0;        // 抖动相位
+        let lastCameraRotX = cameraRotationX;
+        let lastCameraRotY = cameraRotationY;
+        
         // 主函数
         async function main() {
             const canvas = document.getElementById("glCanvas");
-            const gl = canvas.getContext("webgl2");
+            const gl = canvas.getContext("webgl2", { preserveDrawingBuffer: true });
             
             if (!gl) {
                 console.error("无法初始化 WebGL。您的浏览器或机器可能不支持它。");
@@ -431,6 +467,10 @@
                     iMouse: gl.getUniformLocation(shaderProgram, 'iMouse'),
                     iChannel0: gl.getUniformLocation(shaderProgram, 'iChannel0'),
                     iChannel1: gl.getUniformLocation(shaderProgram, 'iChannel1'),
+                    previousFrame: gl.getUniformLocation(shaderProgram, 'previousFrame'),
+                    jitterOffset: gl.getUniformLocation(shaderProgram, 'jitterOffset'),
+                    useTAA: gl.getUniformLocation(shaderProgram, 'useTAA'),
+                    blendFactor: gl.getUniformLocation(shaderProgram, 'blendFactor'),
                     cameraRotX: gl.getUniformLocation(shaderProgram, 'cameraRotX'),
                     cameraRotY: gl.getUniformLocation(shaderProgram, 'cameraRotY')
                 },
@@ -451,15 +491,18 @@
                     texture1
                 };
                 
+                // 为TAA创建帧缓冲区
+                const framebuffers = createFramebuffers(gl, canvas.width, canvas.height);
+                
                 // 设置鼠标事件监听
                 setupMouseHandling(canvas);
                 
-                // 设置帧率控制
-                setupFPSControl();
+                // 设置帧率和TAA控制
+                setupControls();
                 
                 // FPS显示器设置
                 const fpsDisplay = document.createElement('div');
-                fpsDisplay.style.cssText = 'position:absolute;top:50px;left:10px;color:white;background:rgba(0,0,0,0.5);padding:10px;border-radius:5px;z-index:1000;';
+                fpsDisplay.style.cssText = 'position:absolute;top:10px;right:10px;color:white;background:rgba(0,0,0,0.5);padding:10px;border-radius:5px;z-index:1000;';
                 fpsDisplay.textContent = '实际FPS: 0';
                 document.body.appendChild(fpsDisplay);
                 
@@ -474,8 +517,23 @@
                 let fpsUpdateTime = performance.now();
                 let displayFPS = 0;
                 
+                // 当前活动的缓冲区索引
+                let currentFramebuffer = 0;
+                
+                // 哈尔顿序列 - 用于TAA的抖动样本
+                const haltonSequence = (index, base) => {
+                    let result = 0;
+                    let f = 1 / base;
+                    let i = index;
+                    while(i > 0) {
+                        result = result + f * (i % base);
+                        i = Math.floor(i / base);
+                        f = f / base;
+                    }
+                    return result;
+                };
+                
                 function render(currentTime) {
-                    
                     // 计算与上一帧的时间差
                     const deltaTime = currentTime - lastFrameTime;
                     // 如果时间间隔不够，跳过本次渲染
@@ -496,9 +554,49 @@
                     }
 
                     const elapsedTime = (currentTime - startTime) / 1000; // 转换为秒
-
+                    
+                    // 计算TAA抖动偏移
+                    let jitterX = 0, jitterY = 0;
+                    if (taaEnabled) {
+                        // 使用哈尔顿序列生成抖动样本
+                        jitterPhase = (jitterPhase + 1) % 16; // 使用16个样本点循环
+                        jitterX = (haltonSequence(jitterPhase + 1, 2) - 0.5) * jitterStrength;
+                        jitterY = (haltonSequence(jitterPhase + 1, 3) - 0.5) * jitterStrength;
+                    }
+                    
+                    // 检测相机是否移动
+                    const cameraMoving = Math.abs(lastCameraRotX - cameraRotationX) > 0.001 || 
+                                      Math.abs(lastCameraRotY - cameraRotationY) > 0.001;
+                    
+                    // 相机移动时更新混合系数，防止拖影
+                    const blendFactor = cameraMoving ? 1.0 : 0.2; // 相机移动时不使用历史帧
+                    
+                    // 记录本帧的相机位置用于下一帧
+                    lastCameraRotX = cameraRotationX;
+                    lastCameraRotY = cameraRotationY;
+                    
+                    // 绘制场景到当前帧缓冲区
+                    const targetFramebuffer = framebuffers[currentFramebuffer];
+                    const sourceFramebuffer = framebuffers[1 - currentFramebuffer];
+                    
                     // 绘制场景
-                    drawScene(gl, programInfo, buffers, textures, elapsedTime);
+                    drawScene(
+                        gl, 
+                        programInfo, 
+                        buffers, 
+                        textures, 
+                        elapsedTime, 
+                        targetFramebuffer, 
+                        sourceFramebuffer.texture,
+                        { x: jitterX, y: jitterY },
+                        blendFactor
+                    );
+                    
+                    // 将结果拷贝到画布
+                    copyToCanvas(gl, targetFramebuffer.texture);
+                    
+                    // 切换缓冲区
+                    currentFramebuffer = 1 - currentFramebuffer;
                     
                     // 请求下一帧
                     requestAnimationFrame(render);
@@ -552,18 +650,57 @@
             return shader;
         }
         
-        // 初始化缓冲区
+        // 创建TAA所需的帧缓冲区
+        function createFramebuffers(gl, width, height) {
+            const framebuffers = [];
+            
+            for (let i = 0; i < 2; i++) {
+                const fbo = gl.createFramebuffer();
+                gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+                
+                // 创建纹理作为颜色附件
+                const texture = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                
+                // 将纹理附加到帧缓冲区
+                gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+                
+                // 检查帧缓冲区是否完成
+                const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+                if (status !== gl.FRAMEBUFFER_COMPLETE) {
+                    console.error('帧缓冲区创建失败: ' + status);
+                }
+                
+                framebuffers.push({
+                    framebuffer: fbo,
+                    texture: texture
+                });
+            }
+            
+            // 解绑帧缓冲区
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.bindTexture(gl.TEXTURE_2D, null);
+            
+            return framebuffers;
+        }
+
+        // 初始化缓冲区对象
         function initBuffers(gl) {
-            // 创建顶点缓冲区
+            // 创建顶点位置缓冲区
             const positionBuffer = gl.createBuffer();
             gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
             
-            // 定义一个覆盖整个画布的矩形（使用两个三角形）
+            // 创建一个覆盖整个画布的矩形（两个三角形）
             const positions = [
-                -1.0, -1.0,  // 左下角
-                 1.0, -1.0,  // 右下角
-                -1.0,  1.0,  // 左上角
-                 1.0,  1.0,  // 右上角
+                -1.0, -1.0,
+                1.0, -1.0,
+                -1.0,  1.0,
+                1.0,  1.0,
             ];
             
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
@@ -572,22 +709,21 @@
             const texCoordBuffer = gl.createBuffer();
             gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
             
-            // 定义纹理坐标
-            const textureCoordinates = [
-                0.0, 0.0,  // 左下角
-                1.0, 0.0,  // 右下角
-                0.0, 1.0,  // 左上角
-                1.0, 1.0,  // 右上角
+            const texCoords = [
+                0.0, 0.0,
+                1.0, 0.0,
+                0.0, 1.0,
+                1.0, 1.0,
             ];
             
-            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoordinates), gl.STATIC_DRAW);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(texCoords), gl.STATIC_DRAW);
             
             return {
                 position: positionBuffer,
                 texCoord: texCoordBuffer,
             };
         }
-        
+
         // 加载纹理
         function loadTexture(gl, url) {
             return new Promise((resolve, reject) => {
@@ -604,175 +740,58 @@
                 const srcType = gl.UNSIGNED_BYTE;
                 const pixel = new Uint8Array([0, 0, 255, 255]);  // 蓝色
                 gl.texImage2D(gl.TEXTURE_2D, level, internalFormat,
-                              width, height, border, srcFormat, srcType,
-                              pixel);
+                            width, height, border, srcFormat, srcType,
+                            pixel);
                 
                 const image = new Image();
                 image.onload = function() {
                     gl.bindTexture(gl.TEXTURE_2D, texture);
                     gl.texImage2D(gl.TEXTURE_2D, level, internalFormat,
-                                  srcFormat, srcType, image);
+                                srcFormat, srcType, image);
                     
-                    // 检查图像是否为2的幂
+                    // 检查图像尺寸是否为2的幂
                     if (isPowerOf2(image.width) && isPowerOf2(image.height)) {
-                        // 生成mipmap
+                        // 是2的幂，生成完整的mipmap
                         gl.generateMipmap(gl.TEXTURE_2D);
-                        // 设置纹理参数
-                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
                     } else {
-                        // 设置参数，使其在非2次幂尺寸下也能工作
+                        // 不是2的幂，关闭mips并设置包裹模式为clamp
                         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
                         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
                         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
                     }
                     
                     resolve(texture);
                 };
                 image.onerror = function() {
-                    reject(new Error(`加载图片失败: ${url}`));
+                    reject(new Error('加载纹理失败: ' + url));
                 };
                 image.src = url;
             });
         }
-        
+
         // 检查数字是否为2的幂
         function isPowerOf2(value) {
-            return (value & (value - 1)) == 0;
+            return (value & (value - 1)) === 0;
         }
-        
-        // 设置鼠标事件处理
-        function setupMouseHandling(canvas) {
-            X_MIN = -1.0;
-            X_MAX = 1.0;
 
-            // 鼠标按下事件
-            canvas.addEventListener('mousedown', (event) => {
-                mouseDown = true;
-                lastMouseX = event.clientX;
-                lastMouseY = event.clientY;
-                mouseX = event.clientX;
-                mouseY = event.clientY;
-            });
-            
-            // 鼠标移动事件
-            canvas.addEventListener('mousemove', (event) => {
-                mouseX = event.clientX;
-                mouseY = event.clientY;
-                
-                // 如果鼠标按下，计算拖拽距离并更新相机旋转
-                if (mouseDown) {
-                    // 计算鼠标移动的距离
-                    const deltaX = mouseX - lastMouseX;
-                    const deltaY = mouseY - lastMouseY;
-                    
-                    // 根据鼠标移动调整相机旋转角度，使用适当的灵敏度系数
-                    const rotationSpeed = 0.005;
-                    cameraRotationY += deltaX * rotationSpeed;
-                    cameraRotationX -= deltaY * rotationSpeed;
-                    
-                    // 限制垂直旋转范围，防止过度旋转
-                    cameraRotationX = Math.max(X_MIN, Math.min(X_MAX, cameraRotationX));
-                    
-                    // 更新鼠标位置以备下次计算
-                    lastMouseX = mouseX;
-                    lastMouseY = mouseY;
-                }
-            });
-            
-            // 鼠标释放事件
-            canvas.addEventListener('mouseup', () => {
-                mouseDown = false;
-            });
-            
-            // 移出画布时释放鼠标按下状态
-            canvas.addEventListener('mouseleave', () => {
-                mouseDown = false;
-            });
-            
-            // 移动端触摸事件
-            canvas.addEventListener('touchstart', (event) => {
-                event.preventDefault();
-                mouseDown = true;
-                if (event.touches.length > 0) {
-                    lastMouseX = event.touches[0].clientX;
-                    lastMouseY = event.touches[0].clientY;
-                    mouseX = lastMouseX;
-                    mouseY = lastMouseY;
-                }
-            });
-            
-            canvas.addEventListener('touchmove', (event) => {
-                event.preventDefault();
-                if (event.touches.length > 0 && mouseDown) {
-                    // 当前触摸位置
-                    mouseX = event.touches[0].clientX;
-                    mouseY = event.touches[0].clientY;
-                    
-                    // 计算触摸移动的距离
-                    const deltaX = mouseX - lastMouseX;
-                    const deltaY = mouseY - lastMouseY;
-                    
-                    // 根据触摸移动调整相机旋转角度
-                    const rotationSpeed = 0.005;
-                    cameraRotationY += deltaX * rotationSpeed;
-                    cameraRotationX -= deltaY * rotationSpeed;
-                    
-                    // 限制垂直旋转范围
-                    cameraRotationX = Math.max(X_MIN, Math.min(X_MAX, cameraRotationX));
-                    
-                    // 更新触摸位置以备下次计算
-                    lastMouseX = mouseX;
-                    lastMouseY = mouseY;
-                }
-            });
-            
-            canvas.addEventListener('touchend', () => {
-                mouseDown = false;
-            });
-            
-            // 添加鼠标滚轮缩放功能 (可选)
-            canvas.addEventListener('wheel', (event) => {
-                event.preventDefault();
-                // 这里可以添加缩放逻辑，如果需要的话
-            }, { passive: false });
-        }
-        
-        // 设置帧率控制
-        function setupFPSControl() {
-            const fpsSlider = document.getElementById('fpsLimit');
-            const fpsValue = document.getElementById('fpsValue');
-            
-            fpsSlider.addEventListener('input', (e) => {
-                MAX_FPS = parseInt(e.target.value);
-                fpsValue.textContent = MAX_FPS;
-                this.FRAME_MIN_TIME = 1000 / MAX_FPS;
-            });
-        }
-        
         // 绘制场景
-        function drawScene(gl, programInfo, buffers, textures, time) {
-            // 设置视口为整个canvas
+        function drawScene(gl, programInfo, buffers, textures, time, targetFramebuffer, previousFrameTexture, jitterOffset, blendFactor) {
+            // 设置视口和清除颜色
+            gl.bindFramebuffer(gl.FRAMEBUFFER, targetFramebuffer ? targetFramebuffer.framebuffer : null);
             gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-            
             gl.clearColor(0.0, 0.0, 0.0, 1.0);
-            gl.clearDepth(1.0);
-            gl.enable(gl.DEPTH_TEST);
-            gl.depthFunc(gl.LEQUAL);
-            
-            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            gl.clear(gl.COLOR_BUFFER_BIT);
             
             // 使用着色器程序
             gl.useProgram(programInfo.program);
             
             // 设置顶点位置属性
             {
-                const numComponents = 2;  // 每个顶点2个值(x, y)
-                const type = gl.FLOAT;
-                const normalize = false;
-                const stride = 0;
-                const offset = 0;
+                const numComponents = 2;  // 每个顶点提取2个值
+                const type = gl.FLOAT;    // 缓冲区中的数据是32位浮点数
+                const normalize = false;  // 不要归一化
+                const stride = 0;         // 从一个顶点到下一个顶点有多少字节
+                const offset = 0;         // 缓冲区中从哪里开始
                 gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
                 gl.vertexAttribPointer(
                     programInfo.attribLocations.position,
@@ -781,13 +800,12 @@
                     normalize,
                     stride,
                     offset);
-                gl.enableVertexAttribArray(
-                    programInfo.attribLocations.position);
+                gl.enableVertexAttribArray(programInfo.attribLocations.position);
             }
             
             // 设置纹理坐标属性
             {
-                const numComponents = 2;  // 每个纹理坐标2个值(s, t)
+                const numComponents = 2;
                 const type = gl.FLOAT;
                 const normalize = false;
                 const stride = 0;
@@ -800,38 +818,218 @@
                     normalize,
                     stride,
                     offset);
-                gl.enableVertexAttribArray(
-                    programInfo.attribLocations.texCoord);
+                gl.enableVertexAttribArray(programInfo.attribLocations.texCoord);
             }
             
-            // 设置着色器 uniforms
+            // 设置uniforms
             gl.uniform2f(programInfo.uniformLocations.iResolution, gl.canvas.width, gl.canvas.height);
             gl.uniform1f(programInfo.uniformLocations.iTime, time);
-            gl.uniform4f(programInfo.uniformLocations.iMouse, mouseX, mouseY, mouseDown ? 1.0 : 0.0, 0.0);
+            gl.uniform4f(programInfo.uniformLocations.iMouse, mouseX, mouseY, mouseDown ? 1 : 0, 0);
             
-            // 传递相机旋转参数
+            // 设置相机旋转
             gl.uniform1f(programInfo.uniformLocations.cameraRotX, cameraRotationX);
             gl.uniform1f(programInfo.uniformLocations.cameraRotY, cameraRotationY);
             
-            // 激活第一个纹理单元 - 噪声纹理
+            // 设置TAA相关参数
+            gl.uniform2f(programInfo.uniformLocations.jitterOffset, jitterOffset.x, jitterOffset.y);
+            gl.uniform1i(programInfo.uniformLocations.useTAA, taaEnabled ? 1 : 0);
+            gl.uniform1f(programInfo.uniformLocations.blendFactor, blendFactor);
+            
+            // 设置纹理单元
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, textures.texture0);
             gl.uniform1i(programInfo.uniformLocations.iChannel0, 0);
             
-            // 激活第二个纹理单元 - 有机纹理
             gl.activeTexture(gl.TEXTURE1);
             gl.bindTexture(gl.TEXTURE_2D, textures.texture1);
             gl.uniform1i(programInfo.uniformLocations.iChannel1, 1);
             
-            // 绘制
-            {
-                const offset = 0;
-                const vertexCount = 4;
-                gl.drawArrays(gl.TRIANGLE_STRIP, offset, vertexCount);
+            // 绑定上一帧的纹理
+            if (previousFrameTexture) {
+                gl.activeTexture(gl.TEXTURE2);
+                gl.bindTexture(gl.TEXTURE_2D, previousFrameTexture);
+                gl.uniform1i(programInfo.uniformLocations.previousFrame, 2);
             }
+            
+            // 绘制
+            const offset = 0;
+            const vertexCount = 4;
+            gl.drawArrays(gl.TRIANGLE_STRIP, offset, vertexCount);
         }
-        
-        // 页面加载完成后开始初始化
+
+        // 将纹理拷贝到画布
+        function copyToCanvas(gl, texture) {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.clearColor(0.0, 0.0, 0.0, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            
+            // 使用一个简单的着色器程序来绘制全屏四边形
+            const vsSource = `#version 300 es
+                in vec4 aPosition;
+                in vec2 aTexCoord;
+                out vec2 vTexCoord;
+                void main() {
+                    gl_Position = aPosition;
+                    vTexCoord = aTexCoord;
+                }
+            `;
+            
+            const fsSource = `#version 300 es
+                precision mediump float;
+                uniform sampler2D uTexture;
+                in vec2 vTexCoord;
+                out vec4 outColor;
+                void main() {
+                    outColor = texture(uTexture, vTexCoord);
+                }
+            `;
+            
+            const program = initShaderProgram(gl, vsSource, fsSource);
+            gl.useProgram(program);
+            
+            // 设置顶点属性
+            const positionAttributeLocation = gl.getAttribLocation(program, "aPosition");
+            const texCoordAttributeLocation = gl.getAttribLocation(program, "aTexCoord");
+            
+            // 创建和填充缓冲区
+            const positionBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            const positions = [
+                -1.0, -1.0,
+                1.0, -1.0,
+                -1.0,  1.0,
+                1.0,  1.0,
+            ];
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+            gl.enableVertexAttribArray(positionAttributeLocation);
+            gl.vertexAttribPointer(positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+            
+            const texCoordBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+            const texCoords = [
+                0.0, 0.0,
+                1.0, 0.0,
+                0.0, 1.0,
+                1.0, 1.0,
+            ];
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(texCoords), gl.STATIC_DRAW);
+            gl.enableVertexAttribArray(texCoordAttributeLocation);
+            gl.vertexAttribPointer(texCoordAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+            
+            // 设置纹理
+            const textureLocation = gl.getUniformLocation(program, "uTexture");
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.uniform1i(textureLocation, 0);
+            
+            // 绘制
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            
+            // 清理
+            gl.deleteBuffer(positionBuffer);
+            gl.deleteBuffer(texCoordBuffer);
+        }
+
+        // 设置鼠标事件处理
+        function setupMouseHandling(canvas) {
+            canvas.addEventListener('mousedown', function(e) {
+                mouseDown = true;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            });
+            
+            document.addEventListener('mouseup', function() {
+                mouseDown = false;
+            });
+            
+            document.addEventListener('mousemove', function(e) {
+                mouseX = e.clientX;
+                mouseY = e.clientY;
+                
+                if (mouseDown) {
+                    // 计算鼠标移动距离
+                    const dx = (e.clientX - lastMouseX) * 0.01;
+                    const dy = (e.clientY - lastMouseY) * 0.01;
+                    
+                    // 更新相机旋转
+                    cameraRotationY += dx;
+                    cameraRotationX += dy;
+                    
+                    // 限制X轴旋转范围，防止过度旋转
+                    cameraRotationX = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, cameraRotationX));
+                    
+                    lastMouseX = e.clientX;
+                    lastMouseY = e.clientY;
+                }
+            });
+            
+            // 触摸事件支持
+            canvas.addEventListener('touchstart', function(e) {
+                if (e.touches.length === 1) {
+                    mouseDown = true;
+                    lastMouseX = e.touches[0].clientX;
+                    lastMouseY = e.touches[0].clientY;
+                    e.preventDefault();
+                }
+            });
+            
+            document.addEventListener('touchend', function() {
+                mouseDown = false;
+            });
+            
+            document.addEventListener('touchmove', function(e) {
+                if (e.touches.length === 1 && mouseDown) {
+                    mouseX = e.touches[0].clientX;
+                    mouseY = e.touches[0].clientY;
+                    
+                    // 计算触摸移动距离
+                    const dx = (e.touches[0].clientX - lastMouseX) * 0.01;
+                    const dy = (e.touches[0].clientY - lastMouseY) * 0.01;
+                    
+                    // 更新相机旋转
+                    cameraRotationY += dx;
+                    cameraRotationX += dy;
+                    
+                    // 限制X轴旋转范围
+                    cameraRotationX = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, cameraRotationX));
+                    
+                    lastMouseX = e.touches[0].clientX;
+                    lastMouseY = e.touches[0].clientY;
+                    e.preventDefault();
+                }
+            });
+        }
+
+        // 设置控制UI
+        function setupControls() {
+            const fpsLimitSlider = document.getElementById('fpsLimit');
+            const fpsValueSpan = document.getElementById('fpsValue');
+            const taaEnabledCheckbox = document.getElementById('taaEnabled');
+            const jitterStrengthSlider = document.getElementById('jitterStrength');
+            const jitterValueSpan = document.getElementById('jitterValue');
+            
+            // 设置FPS限制
+            fpsLimitSlider.addEventListener('input', function() {
+                const value = parseInt(this.value);
+                fpsValueSpan.textContent = value;
+                MAX_FPS = value;
+                this.FRAME_MIN_TIME = 1000 / MAX_FPS;
+            });
+            
+            // 设置TAA开关
+            taaEnabledCheckbox.addEventListener('change', function() {
+                taaEnabled = this.checked;
+            });
+            
+            // 设置抖动强度
+            jitterStrengthSlider.addEventListener('input', function() {
+                const value = parseFloat(this.value);
+                jitterValueSpan.textContent = value.toFixed(1);
+                jitterStrength = value;
+            });
+        }
+
+        // 启动主函数
         window.onload = main;
     </script>
 </body>

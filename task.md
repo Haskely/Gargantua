@@ -301,3 +301,5 @@ iChannel1: [organic_1_1024](./textures/organic_1_1024.jpg)
 ### 任务说明
 
 你需要参考 [texture_sample](./texture_sample.html) 作为脚手架。将上面的 shadertoy 代码迁移过来，实现在 [gargantua-black-hole](./gargantua-black-hole.html) 中。 javascript 必须使用 es6 语法。
+
+尝试应用 TEMPORAL_AA 技术。所有语法标准都采用最新标准。
