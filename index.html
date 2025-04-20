@@ -28,15 +28,15 @@
         <label for="fpsLimit">最大帧率: <span id="fpsValue">60</span> FPS</label>
         <input type="range" id="fpsLimit" min="10" max="60" step="5" value="60">
     </div>
-    <canvas id="glCanvas" width="1920" height="1080"></canvas>
+    <canvas id="glCanvas" width="1500" height="844"></canvas>
     
     <script>
         // 顶点着色器源码
-        const vertexShaderSource = `
-            attribute vec4 a_position;
-            attribute vec2 a_texCoord;
+        const vertexShaderSource = `#version 300 es
+            in vec4 a_position;
+            in vec2 a_texCoord;
             
-            varying vec2 v_texCoord;
+            out vec2 v_texCoord;
             
             void main() {
                 gl_Position = a_position;
@@ -45,7 +45,7 @@
         `;
         
         // 片元着色器源码，从Shadertoy移植而来
-        const fragmentShaderSource = `
+        const fragmentShaderSource = `#version 300 es
             precision mediump float;
             // precision highp float;
             
@@ -60,9 +60,16 @@
             uniform float cameraRotX;
             uniform float cameraRotY;
             
-            varying vec2 v_texCoord;
             
-            #define ITERATIONS 200          // 降低迭代次数，提高性能
+            /*  
+            Main render. 
+
+            Temporal AA for a smooth image. Temporal accumulation is disabled while moving the view to prevent ghosting.
+            */
+
+            #define ITERATIONS 100          //Increase for less grainy result
+            #define TEMPORAL_AB
+
 
             const vec3 MainColor = vec3(1.0);
 
@@ -73,7 +80,7 @@
                 vec3 f = fract(x);
                 f = f*f*(3.0-2.0*f);
                 vec2 uv = (p.xy+vec2(37.0,17.0)*p.z) + f.xy;
-                vec2 rg = texture2D( iChannel0, (uv+ 0.5)/256.0 ).yx;
+                vec2 rg = textureLod( iChannel0, (uv+ 0.5)/256.0, 0.0 ).yx;
                 return -1.0+2.0*mix( rg.x, rg.y, f.z );
             }
 
@@ -89,7 +96,7 @@
 
             float rand(vec2 coord)
             {
-                return saturate(fract(sin(dot(coord, vec2(12.9898, 78.223))) * 43758.5453));
+                return saturate(fract(sin(dot(coord, vec2(12.9898, 78.223))) * (43758.5453)));
             }
 
             float pcurve( float x, float a, float b )
@@ -142,7 +149,7 @@
 
             float sdSphere(vec3 p, float r)
             {
-              return length(p)-r;
+            return length(p)-r;
             }
 
             void Haze(inout vec3 color, vec3 pos, float alpha)
@@ -158,20 +165,49 @@
                 color += col * bloomDisc * (2.9 / float(ITERATIONS)) * (1.0 - alpha * 1.0);
             }
 
-            void GasDisc(inout vec3 color, inout float alpha, vec3 pos)
+            // 计算两点连线与 xz 平面的交点
+            vec3 intersectionWithXZPlane(vec3 pos, vec3 pre_pos) {
+                // 检查两点是否都在 xz 平面上或者连线平行于 xz 平面
+                if (pos.y == pre_pos.y) {
+                    return vec3(0.0); // 返回零向量表示无有效交点
+                }
+                // 计算参数 t
+                float t = -pre_pos.y / (pos.y - pre_pos.y);
+                // 计算交点的 x 和 z 坐标，y 坐标为 0
+                return vec3(
+                    pre_pos.x + t * (pos.x - pre_pos.x),
+                    0.0,
+                    pre_pos.z + t * (pos.z - pre_pos.z)
+                );
+            } 
+
+            void GasDisc(inout vec3 color, inout float alpha, vec3 pos, vec3 pre_pos)
             {
+                vec3 discNormal = normalize(vec3(0.0, 1.0, 0.0));
+                
+                vec3 origin = vec3(0.0, 0.0, 0.0);
                 float discRadius = 3.2;
                 float discWidth = 5.3;
                 float discInner = discRadius - discWidth * 0.5;
                 float discOuter = discRadius + discWidth * 0.5;
-                
-                vec3 origin = vec3(0.0, 0.0, 0.0);
-                float mouseZ = iMouse.y / iResolution.y;
-                vec3 discNormal = normalize(vec3(0.0, 1.0, 0.0));
                 float discThickness = 0.1;
 
-                float distFromCenter = distance(pos, origin);
-                float distFromDisc = dot(discNormal, pos - origin);
+                
+                // 检测射线是否穿过吸积盘平面
+                if (pos.y * pre_pos.y < 0.0) {
+                    vec3 inter_pos = intersectionWithXZPlane(pos, pre_pos);
+                    pos = inter_pos;
+                }
+                else if (pos.y == 0.0) {
+                    pos = pos;
+                }
+                else {
+                //return;
+                }
+                
+                float distFromCenter = length(vec3(pos.x, 0.0, pos.z));
+                float distFromDisc = pos.y;
+                float prevDistFromDisc = pre_pos.y;
                 
                 float radialGradient = 1.0 - saturate((distFromCenter - discInner) / discWidth * 0.5);
 
@@ -212,7 +248,9 @@
 
                 radialCoords *= 0.95;
                 
-                float speed = 0.2;
+                float speed = 0.0;
+                
+                radialCoords.y += iTime * 0.3 * 0.5;
                 
                 float noise1 = 1.0;
                 vec3 rc = radialCoords + 0.0;               rc.y += iTime * speed;
@@ -233,9 +271,9 @@
                 dustColor *= noise1 * 0.998 + 0.002;
                 coverage *= noise2;
                 
-                radialCoords.y += iTime * speed * 0.5;
-
-                dustColor *= pow(texture2D(iChannel1, radialCoords.yx * vec2(0.15, 0.27)).rgb, vec3(2.0)) * 4.0;
+                
+                
+                dustColor *= pow(texture(iChannel1, radialCoords.yx * vec2(0.15, 0.27)).rgb, vec3(2.0)) * 4.0;
 
                 coverage = saturate(coverage * 1200.0 / float(ITERATIONS));
                 dustColor = max(vec3(0.0), dustColor);
@@ -246,7 +284,6 @@
 
                 alpha = (1.0 - alpha) * coverage + alpha;
             }
-
 
 
             vec3 rotate(vec3 p, float x, float y, float z)
@@ -292,19 +329,19 @@
 
                 eyevec = normalize(eyevec + singularityVector * warpFactor * warpAmount / float(ITERATIONS));
             }
-            
+
+
             void mainImage( out vec4 fragColor, in vec2 fragCoord )
             {
+                
                 vec2 uv = fragCoord.xy / iResolution.xy;
                 
                 float aspect = iResolution.x / iResolution.y;
 
                 vec2 uveye = uv;
                 
-                vec3 eyevec = normalize(vec3((uveye * 2.0 - 1.0) * vec2(aspect, 1.0), 6.0));
+                vec3 eyevec = normalize(vec3((uveye * 2.0 - 1.0) * vec2(aspect, 1.0), 5.0));
                 vec3 eyepos = vec3(0.0, -0.0, -10.0);
-                
-                // 不再使用鼠标位置直接控制相机位置，改为使用 RotateCamera 函数
                 
                 const float far = 15.0;
 
@@ -314,38 +351,44 @@
                 
                 float dither = rand(uv) * 2.0;
 
-                float alpha = 0.0;
+
+                float alpha = 0.;
                 vec3 raypos = eyepos + eyevec * dither * far / float(ITERATIONS);
+                vec3 pre_pos = raypos;
                 for (int i = 0; i < ITERATIONS; i++)
                 {        
                     WarpSpace(eyevec, raypos);
                     raypos += eyevec * far / float(ITERATIONS);
-                    GasDisc(color, alpha, raypos);
+                    GasDisc(color, alpha, raypos, pre_pos);
                     Haze(color, raypos, alpha);
+                    pre_pos = raypos;
                 }
                 
-                color *= 0.02;
+                color *= 0.05;
                 color = pow(color, vec3(1.5));
                 color = color / (1.0 + color);
                 color = pow(color, vec3(1.0 / 1.5));
 
-                
+
                 color = mix(color, color * color * (3.0 - 2.0 * color), vec3(1.0));
                 color = pow(color, vec3(1.3, 1.20, 1.0));    
 
                 color = saturate(color * 1.01);
-                
+
                 color = pow(color, vec3(0.7 / 2.2));
-                
+
                 fragColor = vec4(color, 1.0);
+
             }
+            in vec2 v_texCoord;
+            out vec4 outColor;
 
             // WebGL入口点
             void main() {
                 vec2 fragCoord = v_texCoord * iResolution;
                 vec4 fragColor;
                 mainImage(fragColor, fragCoord);
-                gl_FragColor = fragColor;
+                outColor = fragColor;
             }
         `;
         
