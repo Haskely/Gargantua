@@ -2,22 +2,19 @@
 
 这是一个基于WebGL的交互式黑洞渲染项目，展示了类似于电影《星际穿越》中 Gargantua 黑洞的视觉效果。项目通过片元着色器实现了黑洞引力透镜效应、吸积盘以及其周围的扭曲空间等物理现象的模拟。
 
+## 在线预览
+
+点击 [github.io/Gargantua](https://haskely.github.io/Gargantua/) 查看实时渲染效果。
+
+![previce](./preview.png)
+
 ## 原始来源
 
 本项目改编自 Shadertoy 上的着色器作品：
 - 原始链接：[https://www.shadertoy.com/view/lstSRS](https://www.shadertoy.com/view/lstSRS)
 - 原始作者：[sonicether](https://www.shadertoy.com/user/sonicether)
 
-## 功能特点
-
-- 基于物理的黑洞引力透镜效应模拟
-- 动态渲染的黑洞吸积盘
-- 交互式视角控制
-- 可调节的帧率限制
-- 实时FPS显示
-- 移动设备触摸支持
-
-## 如何运行
+## 如何本地运行
 
 1. 确保您的系统已安装了支持运行shell脚本的环境
 2. 执行以下命令启动本地服务器：
@@ -57,12 +54,4 @@
 
 ### Todo
 
-暂未实现时间平滑和 Bloom 效果。
-
-
-## 性能说明
-
-由于黑洞渲染涉及大量数学计算，原始着色器已经过性能优化：
-- 降低了光线迭代次数（200次）以提高性能
-- 自适应帧率控制
-- 使用固定分辨率（1280x720）以平衡性能和视觉质量
+暂未实现时间平滑和 Bloom HDR 效果。
