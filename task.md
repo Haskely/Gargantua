@@ -112,7 +112,7 @@ void GasDisc(inout vec3 color, inout float alpha, vec3 pos)
     float discWidth = 5.3;
     float discInner = discRadius - discWidth * 0.5;
     float discOuter = discRadius + discWidth * 0.5;
-    
+
     vec3 origin = vec3(0.0, 0.0, 0.0);
     float mouseZ = iMouse.y / iResolution.y;
     vec3 discNormal = normalize(vec3(0.0, 1.0, 0.0));
@@ -120,7 +120,7 @@ void GasDisc(inout vec3 color, inout float alpha, vec3 pos)
 
     float distFromCenter = distance(pos, origin);
     float distFromDisc = dot(discNormal, pos - origin);
-    
+
     float radialGradient = 1.0 - saturate((distFromCenter - discInner) / discWidth * 0.5);
 
     float coverage = pcurve(radialGradient, 4.0, 0.9);
@@ -140,28 +140,28 @@ void GasDisc(inout vec3 color, inout float alpha, vec3 pos)
     float fade = pow((abs(distFromCenter - discInner) + 0.4), 4.0) * 0.04;
     float bloomFactor = 1.0 / (pow(distFromDisc, 2.0) * 40.0 + fade + 0.00002);
     vec3 b = dustColorLit * pow(bloomFactor, 1.5);
-    
+
     b *= mix(vec3(1.7, 1.1, 1.0), vec3(0.5, 0.6, 1.0), vec3(pow(radialGradient, 2.0)));
     b *= mix(vec3(1.7, 0.5, 0.1), vec3(1.0), vec3(pow(radialGradient, 0.5)));
 
     dustColor = mix(dustColor, b * 150.0, saturate(1.0 - coverage * 1.0));
     coverage = saturate(coverage + bloomFactor * bloomFactor * 0.1);
-    
+
     if (coverage < 0.01)
     {
-        return;   
+        return;
     }
-    
-    
+
+
     vec3 radialCoords;
     radialCoords.x = distFromCenter * 1.5 + 0.55;
     radialCoords.y = atan2(-pos.x, -pos.z) * 1.5;
     radialCoords.z = distFromDisc * 1.5;
 
     radialCoords *= 0.95;
-    
+
     float speed = 0.06;
-    
+
     float noise1 = 1.0;
     vec3 rc = radialCoords + 0.0;               rc.y += iTime * speed;
     noise1 *= noise(rc * 3.0) * 0.5 + 0.5;      rc.y -= iTime * speed;
@@ -180,9 +180,9 @@ void GasDisc(inout vec3 color, inout float alpha, vec3 pos)
 
     dustColor *= noise1 * 0.998 + 0.002;
     coverage *= noise2;
-    
+
     radialCoords.y += iTime * speed * 0.5;
-    
+
     dustColor *= pow(texture(iChannel1, radialCoords.yx * vec2(0.15, 0.27)).rgb, vec3(2.0)) * 4.0;
 
     coverage = saturate(coverage * 1200.0 / float(ITERATIONS));
@@ -237,7 +237,7 @@ void WarpSpace(inout vec3 eyevec, inout vec3 raypos)
     float warpFactor = 1.0 / (pow(singularityDist, 2.0) + 0.000001);
 
     vec3 singularityVector = normalize(origin - raypos);
-    
+
     float warpAmount = 5.0;
 
     eyevec = normalize(eyevec + singularityVector * warpFactor * warpAmount / float(ITERATIONS));
@@ -245,49 +245,49 @@ void WarpSpace(inout vec3 eyevec, inout vec3 raypos)
 
 void mainImage( out vec4 fragColor, in vec2 fragCoord )
 {
-    
+
     vec2 uv = fragCoord.xy / iResolution.xy;
-    
+
     float aspect = iResolution.x / iResolution.y;
 
     vec2 uveye = uv;
-    
+
     vec3 eyevec = normalize(vec3((uveye * 2.0 - 1.0) * vec2(aspect, 1.0), 6.0));
     vec3 eyepos = vec3(0.0, -0.0, -10.0);
-    
+
     vec2 mousepos = iMouse.xy / iResolution.xy;
     if (mousepos.x == 0.0)
     {
         mousepos.x = 0.35;
     }
     eyepos.x += mousepos.x * 3.0 - 1.5;
-    
+
     const float far = 15.0;
 
     RotateCamera(eyevec, eyepos);
 
     vec3 color = vec3(0.0, 0.0, 0.0);
-    
-    float dither = rand(uv 
+
+    float dither = rand(uv
                        ) * 2.0;
 
 
     float alpha = 0.0;
     vec3 raypos = eyepos + eyevec * dither * far / float(ITERATIONS);
     for (int i = 0; i < ITERATIONS; i++)
-    {        
+    {
         WarpSpace(eyevec, raypos);
         raypos += eyevec * far / float(ITERATIONS);
         GasDisc(color, alpha, raypos);
         Haze(color, raypos, alpha);
     }
-    
+
     color *= 0.0001;
-    
+
     vec4 out_c = vec4(saturate(color), 1.0);
-    
+
     out_c *= 200.0;
-    
+
     fragColor = out_c;
 
 }
