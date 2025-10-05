@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU + WGSL 最小教学样例</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: #1a1a1a;
+            font-family: 'Segoe UI', sans-serif;
+            color: #fff;
+        }
+        #container {
+            text-align: center;
+        }
+        canvas {
+            border: 2px solid #444;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+        }
+        #info {
+            margin-top: 20px;
+            color: #aaa;
+            font-size: 14px;
+        }
+        #error {
+            color: #ff6b6b;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <canvas id="gpuCanvas" width="800" height="600"></canvas>
+        <div id="info">移动鼠标改变颜色 | 时间自动变化</div>
+        <div id="error"></div>
+    </div>
+
+    <script type="module">
+        // ============================================================
+        // 第一步：检查 WebGPU 支持并初始化
+        // ============================================================
+        
+        async function initWebGPU() {
+            // 检查浏览器是否支持 WebGPU
+            if (!navigator.gpu) {
+                throw new Error('当前浏览器不支持 WebGPU！请使用 Chrome 113+ 或 Edge 113+');
+            }
+
+            // 获取 GPU 适配器（物理 GPU 的抽象表示）
+            const adapter = await navigator.gpu.requestAdapter();
+            if (!adapter) {
+                throw new Error('无法获取 GPU 适配器');
+            }
+
+            // 获取 GPU 设备（用于创建资源和执行命令）
+            const device = await adapter.requestDevice();
+            
+            // 获取 canvas 元素
+            const canvas = document.getElementById('gpuCanvas');
+            
+            // 创建 WebGPU 上下文
+            const context = canvas.getContext('webgpu');
+            
+            // 获取首选的纹理格式
+            const format = navigator.gpu.getPreferredCanvasFormat();
+            
+            // 配置 canvas 上下文
+            context.configure({
+                device: device,
+                format: format,
+                alphaMode: 'premultiplied', // Alpha 混合模式
+            });
+
+            return { device, context, format, canvas };
+        }
+
+        // ============================================================
+        // 第二步：定义 WGSL 着色器代码
+        // ============================================================
+        
+        const shaderCode = `
+            // 定义 Uniform 结构体，用于从 CPU 传递数据到 GPU
+            struct Uniforms {
+                time: f32,        // 时间（秒）
+                mouseX: f32,      // 鼠标 X 坐标（归一化到 0-1）
+                mouseY: f32,      // 鼠标 Y 坐标（归一化到 0-1）
+                padding: f32,     // 填充字节，确保 16 字节对齐
+            }
+            
+            // 绑定 uniform buffer 到 group 0, binding 0
+            @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+            
+            // 顶点着色器输出结构体
+            struct VertexOutput {
+                @builtin(position) position: vec4f,  // 裁剪空间坐标
+                @location(0) uv: vec2f,              // UV 坐标（传递到片段着色器）
+            }
+            
+            // ============================================================
+            // 顶点着色器：为每个顶点计算位置和 UV 坐标
+            // ============================================================
+            @vertex
+            fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+                var output: VertexOutput;
+                
+                // 使用顶点索引生成全屏三角形的坐标
+                // 这是一个技巧：用 3 个顶点绘制覆盖整个屏幕的三角形
+                let x = f32((vertexIndex & 1u) << 1u) - 1.0;  // -1.0 或 1.0
+                let y = 1.0 - f32((vertexIndex & 2u));        // 1.0 或 -1.0
+                
+                output.position = vec4f(x, y, 0.0, 1.0);
+                
+                // 将裁剪空间坐标 (-1 到 1) 转换为 UV 坐标 (0 到 1)
+                output.uv = vec2f((x + 1.0) * 0.5, (1.0 - y) * 0.5);
+                
+                return output;
+            }
+            
+            // ============================================================
+            // 片段着色器：为每个像素计算颜色
+            // ============================================================
+            @fragment
+            fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
+                // 获取当前像素的 UV 坐标
+                let uv = input.uv;
+                
+                // 基于时间创建动画效果
+                let t = uniforms.time;
+                
+                // 计算颜色分量：
+                // R 通道：基于 UV.x 和时间的正弦波
+                let r = sin(uv.x * 3.14159 + t) * 0.5 + 0.5;
+                
+                // G 通道：基于 UV.y 和鼠标 Y 位置的余弦波
+                let g = cos(uv.y * 3.14159 + uniforms.mouseY * 6.28) * 0.5 + 0.5;
+                
+                // B 通道：基于鼠标 X 位置和时间
+                let b = sin(uniforms.mouseX * 6.28 + t * 0.5) * 0.5 + 0.5;
+                
+                // 添加一些波纹效果
+                let dist = distance(uv, vec2f(uniforms.mouseX, uniforms.mouseY));
+                let wave = sin(dist * 20.0 - t * 3.0) * 0.2 + 0.8;
+                
+                // 组合最终颜色
+                let color = vec3f(r, g, b) * wave;
+                
+                // 返回 RGBA 颜色（alpha = 1.0 表示完全不透明）
+                return vec4f(color, 1.0);
+            }
+        `;
+
+        // ============================================================
+        // 第三步：创建渲染管线
+        // ============================================================
+        
+        async function createRenderPipeline(device, format) {
+            // 创建着色器模块
+            const shaderModule = device.createShaderModule({
+                label: 'WGSL 教学着色器',
+                code: shaderCode,
+            });
+
+            // 创建 uniform buffer（用于存储时间和鼠标位置）
+            // 4 个 float32 = 16 字节（符合 WebGPU 的对齐要求）
+            const uniformBuffer = device.createBuffer({
+                label: 'Uniform Buffer',
+                size: 16,  // 4 * 4 bytes
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+
+            // 创建 bind group layout（定义资源绑定方式）
+            const bindGroupLayout = device.createBindGroupLayout({
+                label: 'Bind Group Layout',
+                entries: [{
+                    binding: 0,                           // 对应 @binding(0)
+                    visibility: GPUShaderStage.FRAGMENT,  // 仅片段着色器可见
+                    buffer: { type: 'uniform' }           // uniform buffer 类型
+                }]
+            });
+
+            // 创建 pipeline layout
+            const pipelineLayout = device.createPipelineLayout({
+                label: 'Pipeline Layout',
+                bindGroupLayouts: [bindGroupLayout]
+            });
+
+            // 创建 bind group（绑定实际的 buffer）
+            const bindGroup = device.createBindGroup({
+                label: 'Bind Group',
+                layout: bindGroupLayout,
+                entries: [{
+                    binding: 0,
+                    resource: { buffer: uniformBuffer }
+                }]
+            });
+
+            // 创建渲染管线
+            const pipeline = device.createRenderPipeline({
+                label: '渲染管线',
+                layout: pipelineLayout,
+                vertex: {
+                    module: shaderModule,
+                    entryPoint: 'vertexMain',  // 顶点着色器入口函数
+                },
+                fragment: {
+                    module: shaderModule,
+                    entryPoint: 'fragmentMain', // 片段着色器入口函数
+                    targets: [{
+                        format: format,  // 输出格式
+                    }]
+                },
+                primitive: {
+                    topology: 'triangle-list',  // 使用三角形列表拓扑
+                },
+            });
+
+            return { pipeline, bindGroup, uniformBuffer };
+        }
+
+        // ============================================================
+        // 第四步：渲染循环
+        // ============================================================
+        
+        async function render() {
+            try {
+                // 初始化 WebGPU
+                const { device, context, format, canvas } = await initWebGPU();
+                
+                // 创建渲染管线
+                const { pipeline, bindGroup, uniformBuffer } = await createRenderPipeline(device, format);
+
+                // 鼠标位置状态（归一化到 0-1）
+                let mouseX = 0.5;
+                let mouseY = 0.5;
+
+                // 监听鼠标移动事件
+                canvas.addEventListener('mousemove', (e) => {
+                    const rect = canvas.getBoundingClientRect();
+                    mouseX = (e.clientX - rect.left) / rect.width;
+                    mouseY = (e.clientY - rect.top) / rect.height;
+                });
+
+                // 渲染循环函数
+                function frame(timestamp) {
+                    // 将时间戳转换为秒
+                    const time = timestamp / 1000.0;
+
+                    // 更新 uniform buffer 数据
+                    const uniformData = new Float32Array([
+                        time,    // time
+                        mouseX,  // mouseX
+                        mouseY,  // mouseY
+                        0.0      // padding
+                    ]);
+                    device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+
+                    // 创建命令编码器
+                    const commandEncoder = device.createCommandEncoder({
+                        label: '命令编码器'
+                    });
+
+                    // 获取当前纹理视图
+                    const textureView = context.getCurrentTexture().createView();
+
+                    // 开始渲染通道
+                    const renderPass = commandEncoder.beginRenderPass({
+                        label: '渲染通道',
+                        colorAttachments: [{
+                            view: textureView,
+                            clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },  // 清屏颜色
+                            loadOp: 'clear',   // 清除上一帧
+                            storeOp: 'store',  // 存储渲染结果
+                        }]
+                    });
+
+                    // 设置渲染管线和绑定组
+                    renderPass.setPipeline(pipeline);
+                    renderPass.setBindGroup(0, bindGroup);
+                    
+                    // 绘制 3 个顶点（全屏三角形）
+                    renderPass.draw(3);
+                    
+                    // 结束渲染通道
+                    renderPass.end();
+
+                    // 提交命令到 GPU
+                    device.queue.submit([commandEncoder.finish()]);
+
+                    // 请求下一帧
+                    requestAnimationFrame(frame);
+                }
+
+                // 启动渲染循环
+                requestAnimationFrame(frame);
+
+                console.log('WebGPU 渲染已启动！');
+            } catch (error) {
+                console.error('错误:', error);
+                document.getElementById('error').textContent = '错误: ' + error.message;
+            }
+        }
+
+        // 页面加载完成后启动渲染
+        render();
+    </script>
+</body>
+</html>
