@@ -110,15 +110,22 @@
             fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
                 var output: VertexOutput;
                 
-                // 使用顶点索引生成全屏三角形的坐标
-                // 这是一个技巧：用 3 个顶点绘制覆盖整个屏幕的三角形
-                let x = f32((vertexIndex & 1u) << 1u) - 1.0;  // -1.0 或 1.0
-                let y = 1.0 - f32((vertexIndex & 2u));        // 1.0 或 -1.0
+                // 定义矩形的6个顶点坐标（2个三角形）
+                // 矩形范围：x: -0.6 到 0.6, y: -0.6 到 0.6
+                var positions = array<vec2f, 6>(
+                    vec2f(-0.6, -0.6),  // 左下
+                    vec2f(0.6, -0.6),   // 右下
+                    vec2f(0.6, 0.6),    // 右上
+                    vec2f(-0.6, -0.6),  // 左下
+                    vec2f(0.6, 0.6),    // 右上
+                    vec2f(-0.6, 0.6)    // 左上
+                );
                 
-                output.position = vec4f(x, y, 0.0, 1.0);
+                let pos = positions[vertexIndex];
+                output.position = vec4f(pos, 0.0, 1.0);
                 
-                // 将裁剪空间坐标 (-1 到 1) 转换为 UV 坐标 (0 到 1)
-                output.uv = vec2f((x + 1.0) * 0.5, (1.0 - y) * 0.5);
+                // 将裁剪空间坐标转换为 UV 坐标 (0 到 1)
+                output.uv = vec2f((pos.x + 1.0) * 0.5, (1.0 - pos.y) * 0.5);
                 
                 return output;
             }
@@ -284,8 +291,8 @@
                     renderPass.setPipeline(pipeline);
                     renderPass.setBindGroup(0, bindGroup);
                     
-                    // 绘制 3 个顶点（全屏三角形）
-                    renderPass.draw(3);
+                    // 绘制 6 个顶点（矩形，由2个三角形组成）
+                    renderPass.draw(6);
                     
                     // 结束渲染通道
                     renderPass.end();
